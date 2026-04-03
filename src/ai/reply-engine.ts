@@ -1,10 +1,10 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { PrismaClient } from "@prisma/client";
 import * as fs from "fs";
 import * as path from "path";
 
 const prisma = new PrismaClient();
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ─── โหลด Knowledge Base ──────────────────────────────────────────────────────
 async function loadKnowledgeBase(): Promise<string> {
@@ -86,11 +86,11 @@ class ReplyEngine {
     try {
       const systemPrompt = await buildSystemPrompt();
 
-      // สร้าง messages array จาก history
-      const messages: Anthropic.MessageParam[] = [];
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: systemPrompt },
+      ];
 
       for (const msg of history.slice(-8)) {
-        // 8 ข้อความล่าสุด
         if (msg.sender === "customer") {
           messages.push({ role: "user", content: msg.content });
         } else if (msg.sender === "ai" || msg.sender === "admin") {
@@ -98,26 +98,18 @@ class ReplyEngine {
         }
       }
 
-      // ถ้า message ล่าสุดไม่ใช่ user หรือ messages ว่าง
       const lastMsg = messages[messages.length - 1];
       if (!lastMsg || lastMsg.role !== "user") {
         messages.push({ role: "user", content: userMessage });
       }
 
-      // ต้องให้ messages สลับ user/assistant
-      const validMessages = ensureAlternating(messages);
-
-      const stream = client.messages.stream({
-        model: "claude-sonnet-4-6",
+      const response = await client.chat.completions.create({
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
         max_tokens: 500,
-        system: systemPrompt,
-        messages: validMessages,
+        messages,
       });
 
-      const response = await stream.finalMessage();
-
-      const textBlock = response.content.find((b) => b.type === "text");
-      return textBlock && textBlock.type === "text" ? textBlock.text : null;
+      return response.choices[0]?.message?.content ?? null;
     } catch (error) {
       console.error("❌ AI Reply Error:", error);
       return "ขออภัยครับ/ค่ะ มีปัญหาทางเทคนิค กรุณาลองใหม่อีกครั้ง 🙏";
@@ -132,13 +124,16 @@ class ReplyEngine {
     try {
       const systemPrompt = await buildSystemPrompt();
 
-      const stream = client.messages.stream({
-        model: "claude-sonnet-4-6",
+      const response = await client.chat.completions.create({
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
         max_tokens: 300,
-        system:
-          systemPrompt +
-          "\n\nคุณกำลังตอบคอมเม้นใน Facebook ให้ตอบสั้นๆ กระชับ และเชิญชวนให้ทัก inbox หรือโทรมาหากต้องการข้อมูลเพิ่มเติม",
         messages: [
+          {
+            role: "system",
+            content:
+              systemPrompt +
+              "\n\nคุณกำลังตอบคอมเม้นใน Facebook ให้ตอบสั้นๆ กระชับ และเชิญชวนให้ทัก inbox หรือโทรมาหากต้องการข้อมูลเพิ่มเติม",
+          },
           {
             role: "user",
             content: `ลูกค้าชื่อ ${senderName} คอมเม้นว่า: "${comment}"`,
@@ -146,41 +141,12 @@ class ReplyEngine {
         ],
       });
 
-      const response = await stream.finalMessage();
-
-      const textBlock = response.content.find((b) => b.type === "text");
-      return textBlock && textBlock.type === "text" ? textBlock.text : null;
+      return response.choices[0]?.message?.content ?? null;
     } catch (error) {
       console.error("❌ AI Comment Reply Error:", error);
       return null;
     }
   }
-}
-
-// ─── Helper: ทำให้ messages สลับ user/assistant ────────────────────────────────
-function ensureAlternating(
-  messages: Anthropic.MessageParam[]
-): Anthropic.MessageParam[] {
-  const result: Anthropic.MessageParam[] = [];
-
-  for (const msg of messages) {
-    const last = result[result.length - 1];
-    if (last && last.role === msg.role) {
-      // รวมข้อความที่ role เดียวกัน
-      if (typeof last.content === "string" && typeof msg.content === "string") {
-        last.content = last.content + "\n" + msg.content;
-      }
-    } else {
-      result.push({ ...msg });
-    }
-  }
-
-  // ต้องเริ่มด้วย user
-  if (result.length > 0 && result[0].role !== "user") {
-    result.shift();
-  }
-
-  return result;
 }
 
 export const replyEngine = new ReplyEngine();
