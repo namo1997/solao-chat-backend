@@ -1,0 +1,96 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ผู้ใช้ระบบ (Admin)
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  role      String   @default("admin")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ลูกค้าที่ติดต่อมา
+model Customer {
+  id            String         @id @default(cuid())
+  facebookId    String?        @unique
+  name          String
+  platform      String         @default("facebook") // facebook | line
+  profilePic    String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  conversations Conversation[]
+}
+
+// Conversation (กลุ่มข้อความกับลูกค้าคนนึง)
+model Conversation {
+  id           String    @id @default(cuid())
+  customer     Customer  @relation(fields: [customerId], references: [id])
+  customerId   String
+  platform     String    @default("facebook")
+  status       String    @default("open") // open | resolved | pending
+  isAiEnabled  Boolean   @default(true)
+  lastMessage  String?
+  lastMessageAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  messages     Message[]
+}
+
+// ข้อความแต่ละอัน
+model Message {
+  id             String       @id @default(cuid())
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  conversationId String
+  sender         String       // customer | ai | admin
+  content        String
+  facebookMid    String?      @unique // Facebook message ID
+  isRead         Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+}
+
+// คอมเม้นบน Facebook
+model FacebookComment {
+  id          String   @id @default(cuid())
+  commentId   String   @unique
+  postId      String
+  senderId    String
+  senderName  String
+  message     String
+  aiReply     String?
+  repliedAt   DateTime?
+  status      String   @default("pending") // pending | replied | skipped
+  createdAt   DateTime @default(now())
+}
+
+// Knowledge Base (ข้อมูลที่ AI ใช้ตอบ)
+model KnowledgeItem {
+  id        String   @id @default(cuid())
+  category  String   // menu | policy | faq | promotion | general
+  title     String
+  content   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// การจองโต๊ะ
+model Reservation {
+  id             String   @id @default(cuid())
+  customerName   String
+  phone          String
+  date           DateTime
+  partySize      Int
+  status         String   @default("pending") // pending | confirmed | cancelled
+  notes          String?
+  facebookUserId String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
