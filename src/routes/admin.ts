@@ -149,6 +149,43 @@ router.post("/conversations/:id/send", async (req: Request, res: Response) => {
   res.json(saved);
 });
 
+// สร้าง AI Draft สำหรับการตอบ Messenger (admin เลือกส่งหรือไม่)
+router.post("/conversations/:id/generate-ai", async (req: Request, res: Response) => {
+  const conversationId = getParamId(req.params.id);
+  if (!conversationId) {
+    return res.status(400).json({ error: "Invalid conversation id" });
+  }
+
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    include: {
+      messages: {
+        orderBy: { createdAt: "asc" },
+        take: 10,
+      },
+    },
+  });
+
+  if (!conversation) {
+    return res.status(404).json({ error: "Conversation not found" });
+  }
+
+  const history = conversation.messages;
+  const lastCustomerMsg = [...history].reverse().find((m) => m.sender === "customer");
+
+  if (!lastCustomerMsg) {
+    return res.status(400).json({ error: "No customer message found" });
+  }
+
+  const draft = await replyEngine.generateReply(lastCustomerMsg.content, history);
+
+  if (!draft) {
+    return res.status(500).json({ error: "AI failed to generate draft" });
+  }
+
+  res.json({ draft });
+});
+
 // ─── Comments ─────────────────────────────────────────────────────────────────
 router.get("/comments", async (req: Request, res: Response) => {
   const status = req.query.status as string;
