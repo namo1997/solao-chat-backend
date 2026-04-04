@@ -1,9 +1,16 @@
 import { Router, Request, Response } from "express";
 import { PrismaClient } from "@prisma/client";
 import axios from "axios";
+import { replyEngine } from "../ai/reply-engine";
 
 const router = Router();
 const prisma = new PrismaClient();
+
+function getParamId(rawId: string | string[] | undefined): string | null {
+  if (typeof rawId === "string") return rawId;
+  if (Array.isArray(rawId) && rawId.length > 0) return rawId[0];
+  return null;
+}
 
 // ─── Dashboard Stats ──────────────────────────────────────────────────────────
 router.get("/stats", async (_req: Request, res: Response) => {
@@ -54,8 +61,13 @@ router.get("/conversations", async (req: Request, res: Response) => {
 });
 
 router.get("/conversations/:id", async (req: Request, res: Response) => {
+  const id = getParamId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid conversation id" });
+  }
+
   const conversation = await prisma.conversation.findUnique({
-    where: { id: req.params.id },
+    where: { id },
     include: {
       customer: true,
       messages: {
@@ -73,10 +85,15 @@ router.get("/conversations/:id", async (req: Request, res: Response) => {
 
 // อัปเดต status conversation
 router.patch("/conversations/:id", async (req: Request, res: Response) => {
+  const id = getParamId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid conversation id" });
+  }
+
   const { status, isAiEnabled } = req.body;
 
   const conversation = await prisma.conversation.update({
-    where: { id: req.params.id },
+    where: { id },
     data: {
       ...(status && { status }),
       ...(isAiEnabled !== undefined && { isAiEnabled }),
@@ -88,8 +105,12 @@ router.patch("/conversations/:id", async (req: Request, res: Response) => {
 
 // ส่งข้อความจาก Admin
 router.post("/conversations/:id/send", async (req: Request, res: Response) => {
+  const conversationId = getParamId(req.params.id);
+  if (!conversationId) {
+    return res.status(400).json({ error: "Invalid conversation id" });
+  }
+
   const { message } = req.body;
-  const conversationId = req.params.id;
 
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
@@ -149,6 +170,120 @@ router.get("/comments", async (req: Request, res: Response) => {
   res.json({ comments, total });
 });
 
+router.get("/comments/summary", async (_req: Request, res: Response) => {
+  const [all, pending, replied, skipped] = await Promise.all([
+    prisma.facebookComment.count(),
+    prisma.facebookComment.count({ where: { status: "pending" } }),
+    prisma.facebookComment.count({ where: { status: "replied" } }),
+    prisma.facebookComment.count({ where: { status: "skipped" } }),
+  ]);
+
+  res.json({ all, pending, replied, skipped });
+});
+
+router.patch("/comments/:id", async (req: Request, res: Response) => {
+  const id = getParamId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid comment id" });
+  }
+
+  const { status } = req.body as { status?: string };
+
+  if (!status || !["pending", "replied", "skipped"].includes(status)) {
+    return res
+      .status(400)
+      .json({ error: "Invalid status. Use pending | replied | skipped" });
+  }
+
+  const updated = await prisma.facebookComment.update({
+    where: { id },
+    data: {
+      status,
+      ...(status === "replied"
+        ? { repliedAt: new Date() }
+        : { repliedAt: null }),
+    },
+  });
+
+  res.json(updated);
+});
+
+router.post("/comments/:id/generate-ai", async (req: Request, res: Response) => {
+  const id = getParamId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid comment id" });
+  }
+
+  const comment = await prisma.facebookComment.findUnique({
+    where: { id },
+  });
+
+  if (!comment) {
+    return res.status(404).json({ error: "Comment not found" });
+  }
+
+  const aiReply = await replyEngine.generateCommentReply(
+    comment.message,
+    comment.senderName
+  );
+
+  if (!aiReply) {
+    return res.status(500).json({ error: "AI failed to generate reply" });
+  }
+
+  await prisma.facebookComment.update({
+    where: { id: comment.id },
+    data: { aiReply },
+  });
+
+  res.json({ reply: aiReply });
+});
+
+router.post("/comments/:id/reply", async (req: Request, res: Response) => {
+  const id = getParamId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid comment id" });
+  }
+
+  const { message } = req.body as { message?: string };
+  const trimmed = message?.trim();
+
+  if (!trimmed) {
+    return res.status(400).json({ error: "Reply message is required" });
+  }
+
+  const comment = await prisma.facebookComment.findUnique({
+    where: { id },
+  });
+
+  if (!comment) {
+    return res.status(404).json({ error: "Comment not found" });
+  }
+
+  if (!process.env.FACEBOOK_PAGE_ACCESS_TOKEN) {
+    return res
+      .status(500)
+      .json({ error: "FACEBOOK_PAGE_ACCESS_TOKEN is not configured" });
+  }
+
+  await axios.post(
+    `https://graph.facebook.com/v21.0/${comment.commentId}/comments`,
+    { message: trimmed },
+    { params: { access_token: process.env.FACEBOOK_PAGE_ACCESS_TOKEN } }
+  );
+
+  const updated = await prisma.facebookComment.update({
+    where: { id: comment.id },
+    data: {
+      aiReply: trimmed,
+      status: "replied",
+      repliedAt: new Date(),
+    },
+  });
+
+  res.json(updated);
+});
+
 // ─── Reservations ─────────────────────────────────────────────────────────────
 router.get("/reservations", async (req: Request, res: Response) => {
   const status = req.query.status as string;
@@ -171,10 +306,15 @@ router.get("/reservations", async (req: Request, res: Response) => {
 });
 
 router.patch("/reservations/:id", async (req: Request, res: Response) => {
+  const id = getParamId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid reservation id" });
+  }
+
   const { status, notes } = req.body;
 
   const reservation = await prisma.reservation.update({
-    where: { id: req.params.id },
+    where: { id },
     data: {
       ...(status && { status }),
       ...(notes !== undefined && { notes }),
@@ -201,16 +341,26 @@ router.post("/knowledge", async (req: Request, res: Response) => {
 });
 
 router.put("/knowledge/:id", async (req: Request, res: Response) => {
+  const id = getParamId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid knowledge item id" });
+  }
+
   const { category, title, content, isActive } = req.body;
   const item = await prisma.knowledgeItem.update({
-    where: { id: req.params.id },
+    where: { id },
     data: { category, title, content, isActive },
   });
   res.json(item);
 });
 
 router.delete("/knowledge/:id", async (req: Request, res: Response) => {
-  await prisma.knowledgeItem.delete({ where: { id: req.params.id } });
+  const id = getParamId(req.params.id);
+  if (!id) {
+    return res.status(400).json({ error: "Invalid knowledge item id" });
+  }
+
+  await prisma.knowledgeItem.delete({ where: { id } });
   res.json({ success: true });
 });
 

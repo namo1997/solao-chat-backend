@@ -190,23 +190,8 @@ async function handleCommentEvent(value: any) {
       },
     });
 
-    // ให้ AI ตอบคอมเม้น
-    const aiReply = await replyEngine.generateCommentReply(message, senderName);
-
-    if (aiReply) {
-      // ตอบคอมเม้น
-      await replyToComment(commentId, aiReply);
-
-      // อัปเดต status
-      await prisma.facebookComment.update({
-        where: { id: comment.id },
-        data: {
-          aiReply,
-          status: "replied",
-          repliedAt: new Date(),
-        },
-      });
-    }
+    // ไม่ตอบอัตโนมัติ — รอ admin ตอบจาก dashboard
+    console.log(`📋 บันทึกคอมเม้นรอ admin ตอบ: ${comment.id}`);
   } catch (error) {
     console.error("❌ Error handling comment:", error);
   }
