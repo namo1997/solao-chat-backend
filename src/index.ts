@@ -10,10 +10,24 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Railway อยู่หลัง proxy — ต้องตั้งค่านี้ให้ express-rate-limit ทำงานถูกต้อง
+app.set("trust proxy", 1);
+
 // ─── Middleware ───────────────────────────────────────────────────────────────
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  ...(process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : []),
+];
+
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    origin: (origin, callback) => {
+      // อนุญาต requests ที่ไม่มี origin (เช่น mobile apps, curl, Postman)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      callback(new Error(`CORS: origin ${origin} not allowed`));
+    },
     credentials: true,
   })
 );

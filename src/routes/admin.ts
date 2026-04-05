@@ -186,6 +186,97 @@ router.post("/conversations/:id/generate-ai", async (req: Request, res: Response
   res.json({ draft });
 });
 
+// ─── Import Comments from Facebook ───────────────────────────────────────────
+router.post("/comments/import", async (_req: Request, res: Response) => {
+  const token = process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+  if (!token) {
+    return res.status(500).json({ error: "FACEBOOK_PAGE_ACCESS_TOKEN not configured" });
+  }
+
+  let imported = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  try {
+    // 1. หา Page ID ก่อน
+    const pageId = process.env.FACEBOOK_PAGE_ID || "me";
+
+    // 2. ดึงโพสต์ทั้งหมดของ Page (สูงสุด 25 โพสต์ล่าสุด) โดยใช้ Page ID ตรงๆ
+    const postsRes = await axios.get(`https://graph.facebook.com/v21.0/${pageId}/feed`, {
+      params: {
+        fields: "id,message,created_time",
+        limit: 25,
+        access_token: token,
+      },
+    });
+
+    const posts = postsRes.data?.data || [];
+    console.log(`📄 พบโพสต์ ${posts.length} รายการ`);
+
+    for (const post of posts) {
+      // 2. ดึงคอมเม้นในแต่ละโพสต์ (รองรับ pagination)
+      let nextUrl: string | null =
+        `https://graph.facebook.com/v21.0/${post.id}/comments`;
+      let params: Record<string, string> = {
+        fields: "id,message,from,created_time",
+        limit: "100",
+        access_token: token,
+        filter: "stream",
+      };
+
+      while (nextUrl) {
+        const commentsRes: { data: { data?: any[]; paging?: { next?: string } } } =
+          await axios.get(nextUrl, { params });
+        params = {}; // หลังจาก page แรก next URL มี params อยู่แล้ว
+
+        const comments = commentsRes.data?.data || [];
+
+        for (const c of comments) {
+          const commentId = c.id;
+          const message = c.message?.trim();
+          const senderName = c.from?.name || "ผู้ใช้";
+          const senderId = c.from?.id || "";
+
+          if (!message || !commentId) continue;
+
+          // ข้ามถ้ามีอยู่แล้ว
+          const existing = await prisma.facebookComment.findUnique({
+            where: { commentId },
+          });
+          if (existing) { skipped++; continue; }
+
+          try {
+            await prisma.facebookComment.create({
+              data: {
+                commentId,
+                postId: post.id,
+                senderId,
+                senderName,
+                message,
+                status: "pending",
+                createdAt: new Date(c.created_time),
+              },
+            });
+            imported++;
+          } catch {
+            errors++;
+          }
+        }
+
+        // ไปหน้าถัดไป
+        nextUrl = commentsRes.data?.paging?.next || null;
+      }
+    }
+
+    console.log(`✅ Import เสร็จ: นำเข้า ${imported}, ข้าม ${skipped}, error ${errors}`);
+    res.json({ imported, skipped, errors, posts: posts.length });
+  } catch (err: unknown) {
+    const e = err as { response?: { data?: unknown }; message?: string };
+    console.error("❌ Import error:", e.response?.data || e.message);
+    res.status(500).json({ error: "Import ล้มเหลว", detail: e.response?.data || e.message });
+  }
+});
+
 // ─── Comments ─────────────────────────────────────────────────────────────────
 router.get("/comments", async (req: Request, res: Response) => {
   const status = req.query.status as string;
